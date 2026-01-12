@@ -5,6 +5,7 @@ Main server module for the Semantic Scholar API Server.
 import logging
 import asyncio
 import signal
+import uvicorn
 
 # Import mcp from centralized location
 from .mcp import mcp
@@ -16,6 +17,9 @@ logger = logging.getLogger(__name__)
 
 # Event to keep process alive when FastMCP detaches
 stop_event = None
+# ASGI HTTP server instance and task (for the bridge)
+http_server = None
+http_server_task = None
 
 # Import API modules to register tools
 # Note: This must come AFTER mcp is initialized
@@ -68,6 +72,20 @@ async def shutdown():
             stop_event.set()
     except Exception:
         pass
+
+    # Stop the HTTP bridge if running
+    try:
+        global http_server, http_server_task
+        if http_server is not None:
+            http_server.should_exit = True
+        if http_server_task is not None and not http_server_task.done():
+            http_server_task.cancel()
+            try:
+                await http_server_task
+            except asyncio.CancelledError:
+                pass
+    except Exception as e:
+        logger.error(f"Error stopping HTTP bridge: {e}")
     
     logger.info(f"Cancelled {len(tasks)} tasks")
     logger.info("Shutdown complete")
@@ -87,6 +105,22 @@ async def run_server():
         # Start the server
         logger.info("Starting Semantic Scholar Server")
         task = asyncio.create_task(mcp.run_async())
+
+        # Start the HTTP bridge (ASGI) in the same process so the service
+        # exposes REST endpoints on port 8000. The `bridge.app` is a thin
+        # FastAPI application that reuses the package HTTP utilities.
+        from .bridge import app as bridge_app
+        config = uvicorn.Config(
+            app=bridge_app,
+            host="0.0.0.0",
+            port=8000,
+            log_level="info",
+            ws="none"  # Disable WebSocket support to avoid deprecation warnings
+        )
+        server = uvicorn.Server(config=config)
+        global http_server, http_server_task
+        http_server = server
+        http_server_task = asyncio.create_task(server.serve())
 
         # Create a stop event to keep the main coroutine alive if FastMCP detaches
         global stop_event

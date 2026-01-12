@@ -1,0 +1,137 @@
+"""
+HTTP Bridge for the Semantic Scholar MCP Server
+
+This module exposes a small FastAPI application that forwards REST
+requests to the internal Semantic Scholar helper utilities. The bridge
+is intended to run in the same process/container as the MCP server so
+`open-webui` (or other local services) can call a plain HTTP API.
+
+Design goals
+- Minimal, well-documented HTTP surface for common workflows (search,
+  paper/author details, batch lookups, recommendations).
+- Reuse the existing `semantic_scholar.utils.http` helpers (rate limiting,
+  API key handling, client pooling) to ensure consistent behavior.
+- Run inside the same process as the MCP server (the server starts the
+  Uvicorn instance programmatically).
+
+Usage
+- Import the `app` object into an ASGI/uvicorn runner or let the
+  MCP server start it automatically.
+
+Endpoints
+- GET  /v1/paper/search?q=...            -> semantic scholar search
+- GET  /v1/paper/{paper_id}              -> paper details
+- POST /v1/paper/batch                   -> batch details (json {"ids": [...]})
+- GET  /v1/author/search?q=...           -> author search
+- GET  /v1/author/{author_id}            -> author details
+- POST /v1/author/batch                  -> batch author details
+- GET  /v1/recommendations?paper_id=...  -> recommendations (proxy)
+
+"""
+from typing import List, Optional, Dict, Any
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import logging
+
+from .utils.http import make_request, initialize_client
+from .config import Config
+
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="Semantic Scholar Bridge", version="0.1")
+
+
+class IdList(BaseModel):
+    ids: List[str]
+
+
+@app.on_event("startup")
+async def _startup():
+    # ensure the shared http client is initialized
+    await initialize_client()
+
+
+@app.get("/v1/paper/search")
+async def paper_search(q: str, fields: Optional[str] = None, offset: int = 0, limit: int = 10):
+    params = {"query": q, "offset": offset, "limit": limit}
+    if fields:
+        params["fields"] = fields
+    result = await make_request("/paper/search", params=params)
+    return result
+
+
+@app.get("/v1/paper/{paper_id}")
+async def paper_details(paper_id: str, fields: Optional[str] = None):
+    params = {"fields": fields} if fields else None
+    result = await make_request(f"/paper/{paper_id}", params=params)
+    return result
+
+
+@app.post("/v1/paper/batch")
+async def paper_batch(batch: IdList, fields: Optional[str] = None):
+    params = {"fields": fields} if fields else None
+    # Semantic Scholar batch endpoint expects POST with ids in JSON
+    # The helper `make_request` currently supports GET; do a direct call here.
+    # Reuse the http client from utils.http
+    from .utils.http import http_client
+    if http_client is None:
+        await initialize_client()
+        from .utils.http import http_client as _cli
+        client = _cli
+    else:
+        client = http_client
+
+    url = f"{Config.BASE_URL}/paper/batch"
+    try:
+        resp = await client.post(url, json={"ids": batch.ids}, params=params)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        logger.error(f"Batch paper request failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/v1/author/search")
+async def author_search(q: str, fields: Optional[str] = None, offset: int = 0, limit: int = 10):
+    params = {"query": q, "offset": offset, "limit": limit}
+    if fields:
+        params["fields"] = fields
+    result = await make_request("/author/search", params=params)
+    return result
+
+
+@app.get("/v1/author/{author_id}")
+async def author_details(author_id: str, fields: Optional[str] = None):
+    params = {"fields": fields} if fields else None
+    result = await make_request(f"/author/{author_id}", params=params)
+    return result
+
+
+@app.post("/v1/author/batch")
+async def author_batch(batch: IdList, fields: Optional[str] = None):
+    params = {"fields": fields} if fields else None
+    from .utils.http import http_client
+    if http_client is None:
+        await initialize_client()
+        from .utils.http import http_client as _cli
+        client = _cli
+    else:
+        client = http_client
+
+    url = f"{Config.BASE_URL}/author/batch"
+    try:
+        resp = await client.post(url, json={"ids": batch.ids}, params=params)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        logger.error(f"Batch author request failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/v1/recommendations")
+async def recommendations(paper_id: Optional[str] = None, fields: Optional[str] = None):
+    if not paper_id:
+        raise HTTPException(status_code=400, detail="paper_id is required")
+    params = {"fields": fields} if fields else None
+    result = await make_request(f"/paper/{paper_id}/recommendations", params=params)
+    return result
