@@ -29,14 +29,12 @@ Endpoints
 
 """
 from typing import List, Optional, Dict, Any
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
-import logging
 
 from .utils.http import make_request, initialize_client
+from .utils.logger import logger
 from .config import Config
-
-logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Semantic Scholar Bridge", version="0.1")
 
@@ -52,23 +50,32 @@ async def _startup():
 
 
 @app.get("/v1/paper/search")
-async def paper_search(q: str, fields: Optional[str] = None, offset: int = 0, limit: int = 10):
+async def paper_search(request: Request, q: str, fields: Optional[str] = None, offset: int = 0, limit: int = 10):
     params = {"query": q, "offset": offset, "limit": limit}
     if fields:
         params["fields"] = fields
-    result = await make_request("/paper/search", params=params)
+    # extract bearer token if present and prefer it over env
+    auth = request.headers.get("authorization")
+    token = None
+    if auth and auth.lower().startswith("bearer "):
+        token = auth.split(None, 1)[1]
+    result = await make_request("/paper/search", params=params, api_key_override=token)
     return result
 
 
 @app.get("/v1/paper/{paper_id}")
-async def paper_details(paper_id: str, fields: Optional[str] = None):
+async def paper_details(request: Request, paper_id: str, fields: Optional[str] = None):
     params = {"fields": fields} if fields else None
-    result = await make_request(f"/paper/{paper_id}", params=params)
+    auth = request.headers.get("authorization")
+    token = None
+    if auth and auth.lower().startswith("bearer "):
+        token = auth.split(None, 1)[1]
+    result = await make_request(f"/paper/{paper_id}", params=params, api_key_override=token)
     return result
 
 
 @app.post("/v1/paper/batch")
-async def paper_batch(batch: IdList, fields: Optional[str] = None):
+async def paper_batch(request: Request, batch: IdList, fields: Optional[str] = None):
     params = {"fields": fields} if fields else None
     # Semantic Scholar batch endpoint expects POST with ids in JSON
     # The helper `make_request` currently supports GET; do a direct call here.
@@ -81,9 +88,25 @@ async def paper_batch(batch: IdList, fields: Optional[str] = None):
     else:
         client = http_client
 
+    # extract bearer token from request to override env API key
+    auth = request.headers.get("authorization")
+    token = None
+    if auth and auth.lower().startswith("bearer "):
+        token = auth.split(None, 1)[1]
+
+    headers = {"x-api-key": token} if token else {}
+
     url = f"{Config.BASE_URL}/paper/batch"
     try:
-        resp = await client.post(url, json={"ids": batch.ids}, params=params)
+        logger.debug(
+            "Semantic Scholar request: method=%s url=%s params=%s headers=%s",
+            "POST",
+            url,
+            params,
+            headers
+        )
+        logger.debug("Semantic Scholar request body: %s", {"ids": batch.ids})
+        resp = await client.post(url, json={"ids": batch.ids}, params=params, headers=headers)
         resp.raise_for_status()
         return resp.json()
     except Exception as e:
@@ -92,23 +115,31 @@ async def paper_batch(batch: IdList, fields: Optional[str] = None):
 
 
 @app.get("/v1/author/search")
-async def author_search(q: str, fields: Optional[str] = None, offset: int = 0, limit: int = 10):
+async def author_search(request: Request, q: str, fields: Optional[str] = None, offset: int = 0, limit: int = 10):
     params = {"query": q, "offset": offset, "limit": limit}
     if fields:
         params["fields"] = fields
-    result = await make_request("/author/search", params=params)
+    auth = request.headers.get("authorization")
+    token = None
+    if auth and auth.lower().startswith("bearer "):
+        token = auth.split(None, 1)[1]
+    result = await make_request("/author/search", params=params, api_key_override=token)
     return result
 
 
 @app.get("/v1/author/{author_id}")
-async def author_details(author_id: str, fields: Optional[str] = None):
+async def author_details(request: Request, author_id: str, fields: Optional[str] = None):
     params = {"fields": fields} if fields else None
-    result = await make_request(f"/author/{author_id}", params=params)
+    auth = request.headers.get("authorization")
+    token = None
+    if auth and auth.lower().startswith("bearer "):
+        token = auth.split(None, 1)[1]
+    result = await make_request(f"/author/{author_id}", params=params, api_key_override=token)
     return result
 
 
 @app.post("/v1/author/batch")
-async def author_batch(batch: IdList, fields: Optional[str] = None):
+async def author_batch(request: Request, batch: IdList, fields: Optional[str] = None):
     params = {"fields": fields} if fields else None
     from .utils.http import http_client
     if http_client is None:
@@ -117,10 +148,25 @@ async def author_batch(batch: IdList, fields: Optional[str] = None):
         client = _cli
     else:
         client = http_client
+    # extract token
+    auth = request.headers.get("authorization")
+    token = None
+    if auth and auth.lower().startswith("bearer "):
+        token = auth.split(None, 1)[1]
+
+    headers = {"x-api-key": token} if token else {}
 
     url = f"{Config.BASE_URL}/author/batch"
     try:
-        resp = await client.post(url, json={"ids": batch.ids}, params=params)
+        logger.debug(
+            "Semantic Scholar request: method=%s url=%s params=%s headers=%s",
+            "POST",
+            url,
+            params,
+            headers
+        )
+        logger.debug("Semantic Scholar request body: %s", {"ids": batch.ids})
+        resp = await client.post(url, json={"ids": batch.ids}, params=params, headers=headers)
         resp.raise_for_status()
         return resp.json()
     except Exception as e:
@@ -129,9 +175,13 @@ async def author_batch(batch: IdList, fields: Optional[str] = None):
 
 
 @app.get("/v1/recommendations")
-async def recommendations(paper_id: Optional[str] = None, fields: Optional[str] = None):
+async def recommendations(request: Request, paper_id: Optional[str] = None, fields: Optional[str] = None):
     if not paper_id:
         raise HTTPException(status_code=400, detail="paper_id is required")
     params = {"fields": fields} if fields else None
-    result = await make_request(f"/paper/{paper_id}/recommendations", params=params)
+    auth = request.headers.get("authorization")
+    token = None
+    if auth and auth.lower().startswith("bearer "):
+        token = auth.split(None, 1)[1]
+    result = await make_request(f"/paper/{paper_id}/recommendations", params=params, api_key_override=token)
     return result

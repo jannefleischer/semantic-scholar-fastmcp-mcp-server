@@ -2,7 +2,6 @@
 Main server module for the Semantic Scholar API Server.
 """
 
-import logging
 import asyncio
 import signal
 import uvicorn
@@ -10,10 +9,9 @@ import uvicorn
 # Import mcp from centralized location
 from .mcp import mcp
 from .utils.http import initialize_client, cleanup_client
+from .utils.logger import logger
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # Event to keep process alive when FastMCP detaches
 stop_event = None
@@ -115,6 +113,7 @@ async def run_server():
             host="0.0.0.0",
             port=8000,
             log_level="info",
+            log_config=None,
             ws="none"  # Disable WebSocket support to avoid deprecation warnings
         )
         server = uvicorn.Server(config=config)

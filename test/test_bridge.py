@@ -17,7 +17,8 @@ SAMPLE_AUTHOR_IDS = [SAMPLE_AUTHOR_ID, "2061296"]
 
 @pytest.mark.asyncio
 async def test_paper_search_endpoint(monkeypatch):
-    async def fake_make_request(endpoint, params=None):
+    async def fake_make_request(*args, **kwargs):
+        endpoint = args[0] if args else kwargs.get('endpoint')
         assert endpoint == "/paper/search"
         return {"data": [], "total": 0}
 
@@ -33,7 +34,8 @@ async def test_paper_search_endpoint(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_paper_details_endpoint(monkeypatch):
-    async def fake_make_request(endpoint, params=None):
+    async def fake_make_request(*args, **kwargs):
+        endpoint = args[0] if args else kwargs.get('endpoint')
         assert endpoint.startswith("/paper/")
         return {"paperId": SAMPLE_PAPER_ID, "title": "Test Paper"}
 
@@ -64,7 +66,7 @@ async def test_paper_batch_endpoint(monkeypatch):
             return self._data
 
     class FakeClient:
-        async def post(self, url, json=None, params=None):
+        async def post(self, url, json=None, params=None, headers=None):
             assert isinstance(json, dict) and "ids" in json
             return FakeResp(200, [{"paperId": pid} for pid in json["ids"]])
 
@@ -80,7 +82,8 @@ async def test_paper_batch_endpoint(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_author_endpoints_and_recommendations(monkeypatch):
-    async def fake_make_request(endpoint, params=None):
+    async def fake_make_request(*args, **kwargs):
+        endpoint = args[0] if args else kwargs.get('endpoint')
         if endpoint.startswith("/author/search"):
             return {"data": [], "total": 0}
         if endpoint.startswith("/author/") and "batch" not in endpoint:
